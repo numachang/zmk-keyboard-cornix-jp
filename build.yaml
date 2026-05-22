@@ -13,10 +13,12 @@
 #
 ---
 include:
-  - board: nice_nano/nrf52840/zmk
-    shield: cornix_dongle_adapter cornix_dongle_eyelash dongle_display
-    snippet: studio-rpc-usb-uart nrf52840-nosd
-    artifact-name: cornix_dongle_nosd
+  # Dongle targets disabled: dongles are not available in Japan,
+  # and this keyboard runs as a standard split (no dongle).
+  # - board: nice_nano/nrf52840/zmk
+  #   shield: cornix_dongle_adapter cornix_dongle_eyelash dongle_display
+  #   snippet: studio-rpc-usb-uart nrf52840-nosd
+  #   artifact-name: cornix_dongle_nosd
   # dongle screen not yet supports zephyr4
   # - board: seeeduino_xiao_ble
   #   shield: cornix_dongle_adapter dongle_screen
@@ -31,9 +33,10 @@ include:
     snippet: studio-rpc-usb-uart nrf52840-nosd
     artifact-name: cornix_left_default_nosd
 
-  - board: cornix_ph_left
-    # shield: cornix_indicator
-    artifact-name: cornix_left_for_dongle_nosd
+  # Dongle target disabled (see above).
+  # - board: cornix_ph_left
+  #   # shield: cornix_indicator
+  #   artifact-name: cornix_left_for_dongle_nosd
 
   - board: cornix_right
     # shield: cornix_indicator
@@ -44,7 +47,8 @@ include:
     snippet: studio-rpc-usb-uart nrf52840-nosd
     artifact-name: cornix_reset
 
-  - board: nice_nano/nrf52840/zmk
-    shield: settings_reset
-    snippet: studio-rpc-usb-uart nrf52840-nosd
-    artifact-name: reset_nicenano_nosd
+  # Dongle target disabled (see above).
+  # - board: nice_nano/nrf52840/zmk
+  #   shield: settings_reset
+  #   snippet: studio-rpc-usb-uart nrf52840-nosd
+  #   artifact-name: reset_nicenano_nosd
