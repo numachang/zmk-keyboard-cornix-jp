@@ -21,10 +21,15 @@ manifest:
       remote: urob
       revision: main
       clone-depth: 1
-    - name: zmk-rgbled-widget
-      remote: hitsmaxft
-      revision: main
-      clone-depth: 1
+    # zmk-rgbled-widget intentionally not included.
+    # - hitsmaxft fork has a typeless `config WS2812_STRIP` (Kconfig:29) that
+    #   collides with Zephyr's bool of the same name and breaks every build
+    #   (including settings_reset) the moment it is on west.
+    # - caksoylar upstream is GPIO-leds only and refuses to build without
+    #   `led-red/green/blue` aliases pointing at a `gpio-leds` node, which
+    #   Cornix does not have (WS2812 over SPI3 instead).
+    # The RGB indicator will be implemented as a self-built out-of-tree module
+    # driving led_strip directly. See issue #2 stage B.
     - name: zmk-dongle-display
       remote: englmaxi
       revision: main
