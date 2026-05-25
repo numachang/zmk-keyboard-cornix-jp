@@ -2,9 +2,15 @@
  * Copyright (c) 2026 numachang
  * SPDX-License-Identifier: MIT
  *
- * Stage B1: minimal boot-time blink to verify WS2812 strip + EXT_POWER
- * wiring on both halves. LED0 = dim red, LED1 = dim green, 200 ms, then off.
- * Per-half / event-driven behaviour comes in B2+.
+ * Stage B1b: boot-time probe sequence to pin down both
+ *   (a) which physical LED is pixel[0] vs pixel[1] on each half, and
+ *   (b) which led_rgb field maps to which physical colour channel
+ *       (i.e. whether the DT color-mapping matches the hardware).
+ *
+ * For each pixel index in turn, push dim red, then dim green, then dim
+ * blue, with short gaps between flashes and a longer gap between the
+ * two indices. Total runtime ~6 s, only at boot. Per-half / event-driven
+ * behaviour comes in B2+ once this mapping is confirmed.
  */
 
 #include <string.h>
@@ -34,27 +40,40 @@ static const struct device *const ext_power =
 #define HAVE_EXT_POWER 0
 #endif
 
+#define PROBE_ON_MS    700
+#define PROBE_OFF_MS   200
+#define PROBE_GAP_MS   800
+#define PROBE_LEVEL    0x10
+
 static struct led_rgb pixels[STRIP_NUM_PIXELS];
 
-static void cornix_rgb_boot_blink(void) {
+static void probe_show(int idx, struct led_rgb color, const char *label) {
+    memset(pixels, 0, sizeof(pixels));
+    pixels[idx] = color;
+    int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+    LOG_INF("probe pixel[%d] %s (rc=%d)", idx, label, rc);
+    k_sleep(K_MSEC(PROBE_ON_MS));
+
+    memset(pixels, 0, sizeof(pixels));
+    led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+    k_sleep(K_MSEC(PROBE_OFF_MS));
+}
+
+static void cornix_rgb_boot_probe(void) {
 #if HAVE_EXT_POWER
     if (device_is_ready(ext_power)) {
         ext_power_enable(ext_power);
     }
 #endif
 
-    pixels[0] = (struct led_rgb){.r = 0x10};
-    if (STRIP_NUM_PIXELS > 1) {
-        pixels[1] = (struct led_rgb){.g = 0x10};
+    for (int idx = 0; idx < STRIP_NUM_PIXELS; idx++) {
+        probe_show(idx, (struct led_rgb){.r = PROBE_LEVEL}, ".r");
+        probe_show(idx, (struct led_rgb){.g = PROBE_LEVEL}, ".g");
+        probe_show(idx, (struct led_rgb){.b = PROBE_LEVEL}, ".b");
+        if (idx + 1 < STRIP_NUM_PIXELS) {
+            k_sleep(K_MSEC(PROBE_GAP_MS));
+        }
     }
-    int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
-    LOG_INF("cornix_rgb boot blink on (rc=%d)", rc);
-
-    k_sleep(K_MSEC(200));
-
-    memset(pixels, 0, sizeof(pixels));
-    rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
-    LOG_INF("cornix_rgb boot blink off (rc=%d)", rc);
 
 #if HAVE_EXT_POWER
     if (device_is_ready(ext_power)) {
@@ -74,7 +93,7 @@ static void cornix_rgb_thread_fn(void *p1, void *p2, void *p3) {
     }
 
     k_sleep(K_MSEC(500));
-    cornix_rgb_boot_blink();
+    cornix_rgb_boot_probe();
 }
 
 K_THREAD_DEFINE(cornix_rgb_tid, 1024, cornix_rgb_thread_fn,
