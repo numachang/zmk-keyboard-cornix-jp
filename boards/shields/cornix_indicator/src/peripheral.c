@@ -78,6 +78,10 @@ static int on_central_status(const zmk_event_t *eh) {
 ZMK_LISTENER(cornix_rgb_periph_peer, on_central_status);
 ZMK_SUBSCRIPTION(cornix_rgb_periph_peer, zmk_split_peripheral_status_changed);
 
+bool cornix_rgb_peer_blink_active(void) {
+    return peer_blink_remaining > 0;
+}
+
 static int on_battery_changed(const zmk_event_t *eh) {
     const struct zmk_battery_state_changed *ev = as_zmk_battery_state_changed(eh);
     if (ev == NULL || ev->state_of_charge == 0) {

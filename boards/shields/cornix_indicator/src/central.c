@@ -139,6 +139,10 @@ BT_CONN_CB_DEFINE(cornix_rgb_central_conn_cb) = {
     .disconnected = on_peer_disconnected,
 };
 
+bool cornix_rgb_peer_blink_active(void) {
+    return peer_blink_remaining > 0;
+}
+
 static int on_battery_changed(const zmk_event_t *eh) {
     const struct zmk_battery_state_changed *ev = as_zmk_battery_state_changed(eh);
     if (ev == NULL || ev->state_of_charge == 0) {

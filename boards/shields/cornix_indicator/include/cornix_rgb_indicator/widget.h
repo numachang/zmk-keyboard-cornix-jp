@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/drivers/led_strip.h>
 
@@ -42,3 +43,9 @@ void cornix_rgb_show_once(uint8_t idx, struct led_rgb color, uint16_t on_ms);
 /* Helper: blink a single pixel `count` times. */
 void cornix_rgb_blink(uint8_t idx, struct led_rgb color, uint8_t count,
                       uint16_t on_ms, uint16_t off_ms);
+
+/* Returns true while the per-half peer-lost slow blink is armed (i.e. peer
+ * is currently absent and the worker is mid-cycle). Implemented by
+ * central.c / peripheral.c; charging.c skips its own green blink while
+ * peer-lost is showing so the peer indication is not visually overwritten. */
+bool cornix_rgb_peer_blink_active(void);
