@@ -19,6 +19,12 @@
 /* Display dim by default to keep RGB drain low. */
 #define CORNIX_RGB_LEVEL 0x10
 
+/* Peer-lost continuous blink (B3): blue, 1 Hz, duty 40%, capped at
+ * ~10 seconds or until the link comes back. */
+#define CORNIX_PEER_BLINK_ON_MS     400
+#define CORNIX_PEER_BLINK_PERIOD_MS 1000
+#define CORNIX_PEER_BLINK_MAX_COUNT 10
+
 struct cornix_rgb_msg {
     uint8_t pixel_index;
     struct led_rgb color;

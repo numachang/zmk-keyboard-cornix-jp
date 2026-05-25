@@ -2,11 +2,13 @@
  * Copyright (c) 2026 numachang
  * SPDX-License-Identifier: MIT
  *
- * Stage B2.1 (central / left half):
+ * Stage B3 (central / left half):
  *   pixel[1] (outer): BT profile colour (BT0=green / BT1=red / BT2=blue)
  *                     on every active profile change.
- *   pixel[0] (inner): blue 3 s steady on peripheral link-up, blue 2x
- *                     blink on link-down, red 2x blink on self battery low.
+ *   pixel[0] (inner): blue 3 s steady on peripheral link-up; while
+ *                     peripheral is lost, blue blink at 1 Hz / duty 40%
+ *                     for up to 10 cycles or until the link returns;
+ *                     red 2x blink on self battery low.
  *
  * Note on peer detection: zmk_split_peripheral_status_changed is only
  * raised on the peripheral side. On central we have to register our
@@ -14,8 +16,6 @@
  * does) and filter to info.role == BT_CONN_ROLE_CENTRAL so we ignore
  * host (BT0/1/2) connections, which are handled by the BT profile
  * listener above.
- *
- * Continuous "peer-lost" blinking with a timeout comes in B3.
  */
 
 #include <zephyr/kernel.h>
@@ -78,11 +78,38 @@ static bool is_peripheral_link(struct bt_conn *conn) {
     return info.role == BT_CONN_ROLE_CENTRAL;
 }
 
+static struct k_work_delayable peer_blink_work;
+static int peer_blink_remaining;
+
+static void peer_blink_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    if (peer_blink_remaining <= 0) {
+        return;
+    }
+    cornix_rgb_blink(CORNIX_RGB_PIX_INNER, COL_BLUE, 1,
+                     CORNIX_PEER_BLINK_ON_MS, 0);
+    peer_blink_remaining--;
+    if (peer_blink_remaining > 0) {
+        k_work_reschedule(&peer_blink_work,
+                          K_MSEC(CORNIX_PEER_BLINK_PERIOD_MS));
+    } else {
+        LOG_INF("central: peer-lost blink timed out");
+    }
+}
+
+static int peer_blink_init(void) {
+    k_work_init_delayable(&peer_blink_work, peer_blink_handler);
+    return 0;
+}
+SYS_INIT(peer_blink_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+
 static void on_peer_connected(struct bt_conn *conn, uint8_t err) {
     if (err || !is_peripheral_link(conn)) {
         return;
     }
     LOG_INF("central: peripheral linked");
+    peer_blink_remaining = 0;
+    k_work_cancel_delayable(&peer_blink_work);
     cornix_rgb_show_once(CORNIX_RGB_PIX_INNER, COL_BLUE, PEER_ON_MS);
 }
 
@@ -91,8 +118,9 @@ static void on_peer_disconnected(struct bt_conn *conn, uint8_t reason) {
     if (!is_peripheral_link(conn)) {
         return;
     }
-    LOG_INF("central: peripheral lost");
-    cornix_rgb_blink(CORNIX_RGB_PIX_INNER, COL_BLUE, 2, 400, 400);
+    LOG_INF("central: peripheral lost, starting blink");
+    peer_blink_remaining = CORNIX_PEER_BLINK_MAX_COUNT;
+    k_work_reschedule(&peer_blink_work, K_NO_WAIT);
 }
 
 BT_CONN_CB_DEFINE(cornix_rgb_central_conn_cb) = {

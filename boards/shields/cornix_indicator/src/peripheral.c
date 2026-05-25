@@ -2,12 +2,12 @@
  * Copyright (c) 2026 numachang
  * SPDX-License-Identifier: MIT
  *
- * Stage B2 (peripheral / right half):
- *   pixel[0] (inner): red blink on self battery low.
- *   pixel[1] (outer): blue burst when the link to the central comes up
- *                     or goes down.
+ * Stage B3 (peripheral / right half):
+ *   pixel[0] (inner): red 2x blink on self battery low.
+ *   pixel[1] (outer): blue 3 s steady when the link to central comes up;
+ *                     while the link is lost, blue blink at 1 Hz /
+ *                     duty 40% for up to 10 cycles or until reconnection.
  *
- * Continuous "central-lost" blinking comes in B3.
  * Charging colours come in B4.
  */
 
@@ -29,6 +29,33 @@ LOG_MODULE_DECLARE(cornix_rgb, CONFIG_ZMK_LOG_LEVEL);
 static const struct led_rgb COL_RED  = {.r = CORNIX_RGB_LEVEL};
 static const struct led_rgb COL_BLUE = {.b = CORNIX_RGB_LEVEL};
 
+#define CENTRAL_ON_MS 3000
+
+static struct k_work_delayable peer_blink_work;
+static int peer_blink_remaining;
+
+static void peer_blink_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    if (peer_blink_remaining <= 0) {
+        return;
+    }
+    cornix_rgb_blink(CORNIX_RGB_PIX_OUTER, COL_BLUE, 1,
+                     CORNIX_PEER_BLINK_ON_MS, 0);
+    peer_blink_remaining--;
+    if (peer_blink_remaining > 0) {
+        k_work_reschedule(&peer_blink_work,
+                          K_MSEC(CORNIX_PEER_BLINK_PERIOD_MS));
+    } else {
+        LOG_INF("peripheral: central-lost blink timed out");
+    }
+}
+
+static int peer_blink_init(void) {
+    k_work_init_delayable(&peer_blink_work, peer_blink_handler);
+    return 0;
+}
+SYS_INIT(peer_blink_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+
 static int on_central_status(const zmk_event_t *eh) {
     const struct zmk_split_peripheral_status_changed *ev =
         as_zmk_split_peripheral_status_changed(eh);
@@ -38,9 +65,12 @@ static int on_central_status(const zmk_event_t *eh) {
     LOG_INF("peripheral: central %s",
             ev->connected ? "connected" : "disconnected");
     if (ev->connected) {
-        cornix_rgb_show_once(CORNIX_RGB_PIX_OUTER, COL_BLUE, 3000);
+        peer_blink_remaining = 0;
+        k_work_cancel_delayable(&peer_blink_work);
+        cornix_rgb_show_once(CORNIX_RGB_PIX_OUTER, COL_BLUE, CENTRAL_ON_MS);
     } else {
-        cornix_rgb_blink(CORNIX_RGB_PIX_OUTER, COL_BLUE, 2, 400, 400);
+        peer_blink_remaining = CORNIX_PEER_BLINK_MAX_COUNT;
+        k_work_reschedule(&peer_blink_work, K_NO_WAIT);
     }
     return 0;
 }
