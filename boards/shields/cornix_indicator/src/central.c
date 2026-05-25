@@ -99,6 +99,17 @@ static void peer_blink_handler(struct k_work *work) {
 
 static int peer_blink_init(void) {
     k_work_init_delayable(&peer_blink_work, peer_blink_handler);
+
+    /* Symmetry with peripheral: on the peripheral side, ZMK fires an
+     * initial zmk_split_peripheral_status_changed { connected = false }
+     * at boot, so the user sees the peer-lost blink immediately when
+     * the other half is off. On central, bt_conn_cb.disconnected is
+     * only called for an established-then-lost link, so booting with
+     * the peer absent would otherwise look silent. Arm the blink at
+     * boot; on_peer_connected cancels it if the link comes up first. */
+    peer_blink_remaining = CORNIX_PEER_BLINK_MAX_COUNT;
+    k_work_reschedule(&peer_blink_work, K_MSEC(500));
+
     return 0;
 }
 SYS_INIT(peer_blink_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
