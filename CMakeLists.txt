@@ -1,0 +1,1 @@
+add_subdirectory_ifdef(CONFIG_SHIELD_CORNIX_INDICATOR boards/shields/cornix_indicator)

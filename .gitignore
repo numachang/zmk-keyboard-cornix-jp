@@ -6,4 +6,5 @@ result
 .build
 target
 
-firmware
+/firmware/*
+!/firmware/README.md

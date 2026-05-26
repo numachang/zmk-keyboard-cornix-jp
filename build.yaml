@@ -29,7 +29,7 @@ include:
   #   snippet: studio-rpc-usb-uart
   #   artifact-name: cornix_dongle_zds_nano
   - board: cornix_left
-    # shield: cornix_indicator
+    shield: cornix_indicator
     snippet: studio-rpc-usb-uart nrf52840-nosd
     artifact-name: cornix_left_default_nosd
 
@@ -39,7 +39,7 @@ include:
   #   artifact-name: cornix_left_for_dongle_nosd
 
   - board: cornix_right
-    # shield: cornix_indicator
+    shield: cornix_indicator
     artifact-name: cornix_right_nosd
 
   - board: cornix_right
