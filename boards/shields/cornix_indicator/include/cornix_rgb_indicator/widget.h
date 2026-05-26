@@ -44,6 +44,13 @@ void cornix_rgb_show_once(uint8_t idx, struct led_rgb color, uint16_t on_ms);
 void cornix_rgb_blink(uint8_t idx, struct led_rgb color, uint8_t count,
                       uint16_t on_ms, uint16_t off_ms);
 
+/* Helper: set a pixel's colour and leave it (no auto-off). Used by the
+ * breathing animation in charging.c, which streams ~30 set updates per
+ * second to render the sin-wave fade. Internally rendered as a msg
+ * with on_ms = off_ms = 0, which the worker treats as "write and
+ * return immediately". */
+void cornix_rgb_set(uint8_t idx, struct led_rgb color);
+
 /* Returns true while the per-half peer-lost slow blink is armed (i.e. peer
  * is currently absent and the worker is mid-cycle). Implemented by
  * central.c / peripheral.c; charging.c skips its own green blink while

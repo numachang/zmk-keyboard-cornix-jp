@@ -110,6 +110,19 @@ void cornix_rgb_blink(uint8_t idx, struct led_rgb color, uint8_t count,
     cornix_rgb_queue(&msg);
 }
 
+void cornix_rgb_set(uint8_t idx, struct led_rgb color) {
+    /* on_ms == 0 && off_ms == 0 is treated as "set and return" by the
+     * worker — see the dispatch in cornix_rgb_worker_fn. */
+    struct cornix_rgb_msg msg = {
+        .pixel_index = idx,
+        .color = color,
+        .blink_count = 1,
+        .on_ms = 0,
+        .off_ms = 0,
+    };
+    cornix_rgb_queue(&msg);
+}
+
 static void write_pixel_locked(uint8_t idx, struct led_rgb color) {
     if (idx >= STRIP_NUM_PIXELS) {
         return;
@@ -209,13 +222,22 @@ static void cornix_rgb_worker_fn(void *p1, void *p2, void *p3) {
 
         activity_start();
 
-        for (uint8_t i = 0; i < msg.blink_count; i++) {
+        if (msg.on_ms == 0 && msg.off_ms == 0) {
+            /* "set mode": write the colour and leave it on the strip.
+             * Used by the breathing animation which streams continuous
+             * colour updates. activity_end re-arms the idle off-work,
+             * but the next breathing tick (~33 ms) cancels it again,
+             * so the strip stays powered for the whole animation. */
             write_pixel_locked(my_idx, msg.color);
-            k_sleep(K_MSEC(msg.on_ms));
+        } else {
+            for (uint8_t i = 0; i < msg.blink_count; i++) {
+                write_pixel_locked(my_idx, msg.color);
+                k_sleep(K_MSEC(msg.on_ms));
 
-            write_pixel_locked(my_idx, (struct led_rgb){0});
-            if (i + 1 < msg.blink_count) {
-                k_sleep(K_MSEC(msg.off_ms));
+                write_pixel_locked(my_idx, (struct led_rgb){0});
+                if (i + 1 < msg.blink_count) {
+                    k_sleep(K_MSEC(msg.off_ms));
+                }
             }
         }
 
