@@ -39,4 +39,14 @@ CONFIG_INPUT=y
 CONFIG_EC11=y
 CONFIG_EC11_TRIGGER_GLOBAL_THREAD=y
 
+# Lower the slave latency the split peripheral asks the central to allow.
+# ZMK's default (app/Kconfig) is BT_PERIPHERAL_PREF_LATENCY=30 with a
+# preferred conn interval of 7.5–15 ms. That lets the peripheral skip up
+# to ~465 ms of conn events for power savings, and produces the "right
+# key arrives after a quickly-following left key" reorder we see at high
+# typing speed (#7). 5 caps the worst-case skip near ~90 ms while still
+# leaving meaningful idle-time radio off; revisit if user testing wants
+# 0 (lowest latency, ~+25% half-current) or 10 (closer to default).
+CONFIG_BT_PERIPHERAL_PREF_LATENCY=5
+
 # vim: set ft=kconfig:

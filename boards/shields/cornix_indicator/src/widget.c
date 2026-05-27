@@ -2,22 +2,25 @@
  * Copyright (c) 2026 numachang
  * SPDX-License-Identifier: MIT
  *
- * Stage B6: shared LED strip worker + EXT_POWER auto-off.
+ * Stage B6 + #18: per-pixel strip workers with shared EXT_POWER gating.
  *
- * Owns the led_strip device and the only thread that touches it. Pulls
- * cornix_rgb_msg off a message queue and renders the requested blink on
- * the requested pixel. Per-half listeners (central.c / peripheral.c /
- * charging.c) translate ZMK events into messages and enqueue them.
+ * Listeners (central.c / peripheral.c / charging.c) push cornix_rgb_msg
+ * onto a single public queue via cornix_rgb_queue(); the queue
+ * dispatches per pixel_index to a dedicated worker thread, so a long
+ * steady on one pixel (e.g. 3 s peer-link-up on pixel[0]) does not
+ * block events targeting the other pixel (e.g. BT search blink on
+ * pixel[1]).
  *
- * EXT_POWER is gated for power saving (#15): WS2812 idle current is
- * non-negligible, so we cut its supply when no message has arrived for
- * EXT_POWER_IDLE_TIMEOUT_MS. The next message restores power, waits a
- * short settle, and renders.
+ * Only the LED strip device + the pixels[] buffer are shared, and
+ * those are protected by strip_mutex held for the duration of a
+ * write_pixel() call only. The on_ms / off_ms sleeps run outside the
+ * mutex so both workers can sleep concurrently.
  *
- * The idle timeout must exceed the longest continuous-blink period
- * (B3 peer-lost = 1 s, B4 charging = 2 s, B5 BT search = 1 s) so that
- * those workers' own self-rescheduling keeps the LED powered for the
- * duration of the indication. 15 s leaves comfortable headroom.
+ * EXT_POWER is gated for power saving (#15): the rail is left OFF
+ * unless at least one worker is currently rendering, and an off-work
+ * disables the rail EXT_POWER_IDLE_TIMEOUT_MS after the last worker
+ * returns to msg-wait. An atomic active-worker count handles the
+ * cancel/re-arm symmetrically across both threads.
  *
  * EXT_POWER rail assumption: this fork's Cornix wiring puts the WS2812
  * strip alone on the zmk,ext-power-generic rail (P0.13 left / P0.24
@@ -31,6 +34,7 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 
 #include <drivers/ext_power.h>
 
@@ -46,6 +50,8 @@ LOG_MODULE_REGISTER(cornix_rgb, CONFIG_ZMK_LOG_LEVEL);
 
 BUILD_ASSERT(DT_NODE_HAS_STATUS(STRIP_NODE, okay),
              "cornix_rgb: status-ws2812 alias must point at an okay node");
+BUILD_ASSERT(STRIP_NUM_PIXELS == 2,
+             "cornix_rgb: per-pixel workers are hard-wired to chain-length=2");
 
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 
@@ -57,12 +63,25 @@ static const struct device *const ext_power =
 #define HAVE_EXT_POWER 0
 #endif
 
-K_MSGQ_DEFINE(cornix_rgb_msgq, sizeof(struct cornix_rgb_msg), 16, 4);
+/* One queue per pixel index keeps a long render on one pixel from
+ * delaying messages targeted at the other. cornix_rgb_queue() routes
+ * by msg.pixel_index. Per-queue depth of 8 is plenty: only the
+ * continuous-blink workers (B3/B4/B5) self-enqueue, and they do so
+ * once per cycle (>= 1 s), well behind the worker drain rate. */
+K_MSGQ_DEFINE(cornix_rgb_msgq_p0, sizeof(struct cornix_rgb_msg), 8, 4);
+K_MSGQ_DEFINE(cornix_rgb_msgq_p1, sizeof(struct cornix_rgb_msg), 8, 4);
 
+/* pixels[] and the led_strip device are touched from both worker
+ * threads. strip_mutex is held only for the brief window of the
+ * actual write — the on_ms / off_ms sleeps run outside it so both
+ * workers can sleep concurrently. */
+K_MUTEX_DEFINE(strip_mutex);
 static struct led_rgb pixels[STRIP_NUM_PIXELS];
 
 void cornix_rgb_queue(const struct cornix_rgb_msg *msg) {
-    if (k_msgq_put(&cornix_rgb_msgq, msg, K_NO_WAIT) != 0) {
+    struct k_msgq *target =
+        (msg->pixel_index == 0) ? &cornix_rgb_msgq_p0 : &cornix_rgb_msgq_p1;
+    if (k_msgq_put(target, msg, K_NO_WAIT) != 0) {
         LOG_WRN("cornix_rgb: msgq full, dropping msg for pixel %u",
                 msg->pixel_index);
     }
@@ -91,16 +110,35 @@ void cornix_rgb_blink(uint8_t idx, struct led_rgb color, uint8_t count,
     cornix_rgb_queue(&msg);
 }
 
-static void write_pixel(uint8_t idx, struct led_rgb color) {
+void cornix_rgb_set(uint8_t idx, struct led_rgb color) {
+    /* on_ms == 0 && off_ms == 0 is treated as "set and return" by the
+     * worker — see the dispatch in cornix_rgb_worker_fn. */
+    struct cornix_rgb_msg msg = {
+        .pixel_index = idx,
+        .color = color,
+        .blink_count = 1,
+        .on_ms = 0,
+        .off_ms = 0,
+    };
+    cornix_rgb_queue(&msg);
+}
+
+static void write_pixel_locked(uint8_t idx, struct led_rgb color) {
     if (idx >= STRIP_NUM_PIXELS) {
         return;
     }
+    k_mutex_lock(&strip_mutex, K_FOREVER);
     pixels[idx] = color;
     led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+    k_mutex_unlock(&strip_mutex);
 }
 
 #if HAVE_EXT_POWER
 static struct k_work_delayable ext_power_off_work;
+/* Number of worker threads currently rendering (between activity_start
+ * and activity_end). When 0, the off-work is armed; when it goes 0->1
+ * the off-work is cancelled and EXT_POWER is brought up. */
+static atomic_t active_workers = ATOMIC_INIT(0);
 
 static void ext_power_off_handler(struct k_work *work) {
     ARG_UNUSED(work);
@@ -130,56 +168,88 @@ static void ensure_ext_power_on(void) {
         LOG_INF("cornix_rgb: ext_power ON");
     }
 }
-#endif
 
-static void cornix_rgb_thread_fn(void *p1, void *p2, void *p3) {
-    ARG_UNUSED(p1);
-    ARG_UNUSED(p2);
-    ARG_UNUSED(p3);
-
-    if (!device_is_ready(strip)) {
-        LOG_ERR("cornix_rgb: led_strip device not ready");
-        return;
-    }
-
-    LOG_INF("cornix_rgb worker started, %d pixel(s)", STRIP_NUM_PIXELS);
-
-    /* EXT_POWER is left OFF at boot. The first message will turn it on
-     * via ensure_ext_power_on(); after EXT_POWER_IDLE_TIMEOUT_MS of
-     * silence the off-work will turn it off again. */
-
-    while (true) {
-        struct cornix_rgb_msg msg;
-        k_msgq_get(&cornix_rgb_msgq, &msg, K_FOREVER);
-
-#if HAVE_EXT_POWER
+static void activity_start(void) {
+    if (atomic_inc(&active_workers) == 0) {
+        /* 0 -> 1 transition: this is the first worker becoming active.
+         * Cancel any pending off-work and make sure power is up before
+         * we let the worker write to the strip. */
         k_work_cancel_delayable(&ext_power_off_work);
+        k_mutex_lock(&strip_mutex, K_FOREVER);
         ensure_ext_power_on();
-#endif
-
-        for (uint8_t i = 0; i < msg.blink_count; i++) {
-            write_pixel(msg.pixel_index, msg.color);
-            k_sleep(K_MSEC(msg.on_ms));
-
-            write_pixel(msg.pixel_index, (struct led_rgb){0});
-            if (i + 1 < msg.blink_count) {
-                k_sleep(K_MSEC(msg.off_ms));
-            }
-        }
-
-#if HAVE_EXT_POWER
-        /* Re-arm the off timer only when the queue has gone quiet.
-         * Continuous-blink workers (B3/B4/B5) self-reschedule faster
-         * than the timeout, so the timer keeps getting cancelled while
-         * an indication is in progress. */
-        k_work_reschedule(&ext_power_off_work,
-                          K_MSEC(EXT_POWER_IDLE_TIMEOUT_MS));
-#endif
+        k_mutex_unlock(&strip_mutex);
     }
 }
 
-K_THREAD_DEFINE(cornix_rgb_tid, 1024, cornix_rgb_thread_fn,
-                NULL, NULL, NULL,
+static void activity_end(void) {
+    if (atomic_dec(&active_workers) == 1) {
+        /* 1 -> 0 transition: last active worker just finished. Arm
+         * the off-work; any new msg that arrives within the timeout
+         * will cancel and re-enable in activity_start above. */
+        k_work_reschedule(&ext_power_off_work,
+                          K_MSEC(EXT_POWER_IDLE_TIMEOUT_MS));
+    }
+}
+#else
+static inline void activity_start(void) {}
+static inline void activity_end(void) {}
+#endif
+
+static void cornix_rgb_worker_fn(void *p1, void *p2, void *p3) {
+    int my_idx = (int)(intptr_t)p1;
+    struct k_msgq *my_msgq = p2;
+    ARG_UNUSED(p3);
+
+    if (!device_is_ready(strip)) {
+        LOG_ERR("cornix_rgb worker[%d]: led_strip not ready", my_idx);
+        return;
+    }
+    LOG_INF("cornix_rgb worker[%d] started", my_idx);
+
+    while (true) {
+        struct cornix_rgb_msg msg;
+        k_msgq_get(my_msgq, &msg, K_FOREVER);
+
+        /* Defensive: cornix_rgb_queue() already routes by pixel_index,
+         * but if something went wrong upstream we'd rather drop the
+         * misrouted message than let one worker scribble on the other
+         * pixel's slot. */
+        if (msg.pixel_index != my_idx) {
+            LOG_ERR("worker[%d] got msg for pixel %u — dropping",
+                    my_idx, msg.pixel_index);
+            continue;
+        }
+
+        activity_start();
+
+        if (msg.on_ms == 0 && msg.off_ms == 0) {
+            /* "set mode": write the colour and leave it on the strip.
+             * Used by the breathing animation which streams continuous
+             * colour updates. activity_end re-arms the idle off-work,
+             * but the next breathing tick (~33 ms) cancels it again,
+             * so the strip stays powered for the whole animation. */
+            write_pixel_locked(my_idx, msg.color);
+        } else {
+            for (uint8_t i = 0; i < msg.blink_count; i++) {
+                write_pixel_locked(my_idx, msg.color);
+                k_sleep(K_MSEC(msg.on_ms));
+
+                write_pixel_locked(my_idx, (struct led_rgb){0});
+                if (i + 1 < msg.blink_count) {
+                    k_sleep(K_MSEC(msg.off_ms));
+                }
+            }
+        }
+
+        activity_end();
+    }
+}
+
+K_THREAD_DEFINE(cornix_rgb_tid_p0, 1024, cornix_rgb_worker_fn,
+                (void *)(intptr_t)0, &cornix_rgb_msgq_p0, NULL,
+                K_LOWEST_APPLICATION_THREAD_PRIO, 0, 200);
+K_THREAD_DEFINE(cornix_rgb_tid_p1, 1024, cornix_rgb_worker_fn,
+                (void *)(intptr_t)1, &cornix_rgb_msgq_p1, NULL,
                 K_LOWEST_APPLICATION_THREAD_PRIO, 0, 200);
 
 #if !IS_ENABLED(CONFIG_ZMK_SPLIT)
