@@ -1,0 +1,23 @@
+# Scheduled smoke build — issue #1 対策案2.
+#
+# config/west.yml の外部依存 (zmk / zmk-helpers / zmk-dongle-display) は
+# すべて `revision: main` 追従のため、ローカル変更ゼロでも upstream の
+# 任意 commit で Actions ビルドが突然壊れうる。この workflow は定期的に
+# build.yaml の全ターゲットをビルドし、壊れたら GitHub が失敗を通知する
+# (= Studio 接続中やキーマップ編集中に初めて発覚する事態を避ける早期検知)。
+#
+# 注意:
+#  - cron は UTC。`0 0 * * 1` = 毎週月曜 00:00 UTC = 09:00 JST。
+#  - スケジュール実行は **デフォルトブランチ (main) 上の定義のみ** 発火する。
+#    この file が main にマージされて初めて週次実行が始まる。
+#  - GitHub は 60 日間 repo 活動がないとスケジュール workflow を自動停止する。
+#    停止された場合は Actions タブから手動再有効化、または workflow_dispatch。
+name: Smoke build (scheduled)
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@main
